@@ -20,20 +20,22 @@ const (
 	refreshInterval = 3 * time.Second
 	sigkillDelay    = 2 * time.Second
 
-	colPort = 7
-	colPID  = 9
-	colName = 15
-	colRepo = 16
-	colTree = 24
+	colPort      = 7
+	colPID       = 9
+	colName      = 15
+	colRepo      = 16
+	colTree      = 24
+	colContainer = 14
 )
 
 type Process struct {
-	Port     int
-	PID      int
-	Name     string
-	Command  string
-	Repo     string
-	Worktree string
+	Port            int
+	PID             int
+	Name            string
+	Command         string
+	Repo            string
+	Worktree        string
+	DockerContainer string // non-empty if this port is published by a Docker container
 }
 
 type viewMode int
@@ -64,8 +66,9 @@ type model struct {
 type tickMsg struct{}
 type processesMsg []Process
 type killDoneMsg struct {
-	pid int
-	err error
+	pid       int
+	container string
+	err       error
 }
 type openDoneMsg struct {
 	url string
@@ -293,6 +296,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("kill failed: %v", msg.err)
 			m.statusIsErr = true
+		} else if msg.container != "" {
+			m.statusMsg = fmt.Sprintf("stopped container %s", msg.container)
+			m.statusIsErr = false
 		} else {
 			m.statusMsg = fmt.Sprintf("killed PID %d", msg.pid)
 			m.statusIsErr = false
@@ -444,7 +450,11 @@ func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.displayed) {
 			proc := m.displayed[m.cursor]
 			m.mode = modeNormal
-			m.statusMsg = fmt.Sprintf("killing PID %d (%s)...", proc.PID, proc.Name)
+			if proc.DockerContainer != "" {
+				m.statusMsg = fmt.Sprintf("stopping container %s...", proc.DockerContainer)
+			} else {
+				m.statusMsg = fmt.Sprintf("killing PID %d (%s)...", proc.PID, proc.Name)
+			}
 			m.statusIsErr = false
 			return m, cmdKill(proc)
 		}
@@ -516,6 +526,11 @@ func cmdOpenBrowser(port int) tea.Cmd {
 
 func cmdKill(proc Process) tea.Cmd {
 	return func() tea.Msg {
+		if proc.DockerContainer != "" {
+			err := exec.Command("docker", "stop", proc.DockerContainer).Run()
+			return killDoneMsg{pid: proc.PID, container: proc.DockerContainer, err: err}
+		}
+
 		p, err := os.FindProcess(proc.PID)
 		if err != nil {
 			return killDoneMsg{pid: proc.PID, err: err}
@@ -541,6 +556,45 @@ func cmdKill(proc Process) tea.Cmd {
 		_ = p.Signal(syscall.SIGKILL)
 		return killDoneMsg{pid: proc.PID, err: nil}
 	}
+}
+
+// getDockerPorts returns a map of host port → container name for all running Docker containers.
+func getDockerPorts() map[int]string {
+	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Ports}}").Output()
+	if err != nil {
+		return nil
+	}
+	portToContainer := make(map[int]string)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name, ports := parts[0], parts[1]
+		for _, mapping := range strings.Split(ports, ", ") {
+			mapping = strings.TrimSpace(mapping)
+			// format: "0.0.0.0:3000->3000/tcp" or ":::3000->3000/tcp"
+			arrowIdx := strings.Index(mapping, "->")
+			if arrowIdx < 0 {
+				continue
+			}
+			hostPart := mapping[:arrowIdx]
+			colonIdx := strings.LastIndex(hostPart, ":")
+			if colonIdx < 0 {
+				continue
+			}
+			port, err := strconv.Atoi(hostPart[colonIdx+1:])
+			if err != nil || port <= 0 {
+				continue
+			}
+			portToContainer[port] = name
+		}
+	}
+	return portToContainer
 }
 
 func (m model) View() string {
@@ -584,12 +638,13 @@ func (m model) renderHeader() string {
 func (m model) renderColHeaders() string {
 	cmdWidth := m.cmdColWidth()
 	return colHeaderStyle.Render(
-		fmt.Sprintf(" %-*s %-*s %-*s %s %s %s",
+		fmt.Sprintf(" %-*s %-*s %-*s %s %s %s %s",
 			colPort-1, "PORT",
 			colPID-1, "PID",
 			colName-1, "PROCESS",
 			truncate("REPO", colRepo-1),
 			truncate("TREE", colTree-1),
+			truncate("CONTAINER", colContainer-1),
 			truncate("COMMAND", cmdWidth),
 		),
 	)
@@ -630,14 +685,16 @@ func (m model) renderRows(maxRows int) string {
 		nameStr := fmt.Sprintf("%-*s", colName-1, p.Name)
 		repoStr := truncateEnd(p.Repo, colRepo-1)
 		treeStr := truncateEnd(p.Worktree, colTree-1)
+		containerStr := truncateEnd(p.DockerContainer, colContainer-1)
 		cmdStr := truncateEnd(p.Command, cmdWidth)
 
-		plainRow := fmt.Sprintf(" %-*d %-*d %-*s %s %s %s",
+		plainRow := fmt.Sprintf(" %-*d %-*d %-*s %s %s %s %s",
 			colPort-1, p.Port,
 			colPID-1, p.PID,
 			colName-1, p.Name,
 			repoStr,
 			treeStr,
+			containerStr,
 			cmdStr,
 		)
 
@@ -646,7 +703,7 @@ func (m model) renderRows(maxRows int) string {
 		} else if isHidden {
 			b.WriteString(hiddenRowStyle.Render(plainRow))
 		} else {
-			row := " " + portStr + " " + normalStyle.Render(pidStr+" "+nameStr+repoStr+" "+treeStr+" "+cmdStr)
+			row := " " + portStr + " " + normalStyle.Render(pidStr+" "+nameStr+repoStr+" "+treeStr+" "+containerStr+" "+cmdStr)
 			b.WriteString(row)
 		}
 		b.WriteString("\n")
@@ -672,6 +729,9 @@ func (m model) renderFooter() string {
 	case modeConfirm:
 		if m.cursor < len(m.displayed) {
 			p := m.displayed[m.cursor]
+			if p.DockerContainer != "" {
+				return confirmStyle.Render(fmt.Sprintf("stop container %s (:%d)? [Y/n]", p.DockerContainer, p.Port))
+			}
 			return confirmStyle.Render(fmt.Sprintf("kill PID %d (%s) on :%d? [Y/n]", p.PID, p.Name, p.Port))
 		}
 	}
@@ -691,7 +751,7 @@ func (m model) renderFooter() string {
 }
 
 func (m model) cmdColWidth() int {
-	w := m.width - colPort - colPID - colName - colRepo - colTree - 2
+	w := m.width - colPort - colPID - colName - colRepo - colTree - colContainer - 2
 	if w < 10 {
 		w = 10
 	}
@@ -784,6 +844,14 @@ func getListeningProcesses() []Process {
 		}
 		procs[i].Repo = ctx.repo
 		procs[i].Worktree = ctx.worktree
+	}
+
+	// Annotate processes whose port is published by a Docker container.
+	dockerPorts := getDockerPorts()
+	for i, p := range procs {
+		if container, ok := dockerPorts[p.Port]; ok {
+			procs[i].DockerContainer = container
+		}
 	}
 
 	return procs
