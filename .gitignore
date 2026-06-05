@@ -1,0 +1,17 @@
+# binary
+porter
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go module cache
+vendor/
+
+# macOS
+.DS_Store
