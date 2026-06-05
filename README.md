@@ -9,6 +9,7 @@ A terminal UI for monitoring listening ports on macOS. Shows each process's port
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Navigate |
+| `enter` | Open selected port in browser (`http://localhost:<port>`) |
 | `pgup` / `pgdn` | Page up / down |
 | `k` | Kill selected process (prompts for confirmation) |
 | `h` | Hide selected process by name (persisted across restarts) |

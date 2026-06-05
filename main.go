@@ -67,6 +67,10 @@ type killDoneMsg struct {
 	pid int
 	err error
 }
+type openDoneMsg struct {
+	url string
+	err error
+}
 
 // styles
 var (
@@ -295,6 +299,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmdLoadProcesses()
 
+	case openDoneMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("open failed: %v", msg.err)
+			m.statusIsErr = true
+		} else {
+			m.statusMsg = fmt.Sprintf("opened %s", msg.url)
+			m.statusIsErr = false
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -386,6 +400,11 @@ func (m model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("unhidden %q", proc.Name)
 				m.statusIsErr = false
 			}
+		}
+	case "enter":
+		if len(m.displayed) > 0 {
+			proc := m.displayed[m.cursor]
+			return m, cmdOpenBrowser(proc.Port)
 		}
 	}
 	return m, nil
@@ -485,6 +504,14 @@ func (m *model) applyFilter() {
 		out = []Process{}
 	}
 	m.displayed = out
+}
+
+func cmdOpenBrowser(port int) tea.Cmd {
+	url := fmt.Sprintf("http://localhost:%d", port)
+	return func() tea.Msg {
+		err := exec.Command("open", url).Run()
+		return openDoneMsg{url: url, err: err}
+	}
 }
 
 func cmdKill(proc Process) tea.Cmd {
@@ -656,7 +683,7 @@ func (m model) renderFooter() string {
 		return successStyle.Render(m.statusMsg)
 	}
 
-	help := "↑/↓ navigate   pgup/pgdn page   k kill   h hide   H show hidden   r refresh   / filter   q quit"
+	help := "↑/↓ navigate   enter open   pgup/pgdn page   k kill   h hide   H show hidden   r refresh   / filter   q quit"
 	if len(m.displayed) > 0 {
 		help += fmt.Sprintf("   [%d/%d]", m.cursor+1, len(m.displayed))
 	}
