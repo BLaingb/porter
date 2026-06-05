@@ -2,7 +2,7 @@
 
 A terminal UI for monitoring listening ports on macOS. Shows each process's port, PID, name, and the git repo/worktree it's running from. Kill processes, filter by port or repo, and permanently hide noisy system apps like Chrome or Postman.
 
-![porter screenshot](https://github.com/BLaingb/porter/assets/porter-screenshot.png)
+![porter screenshot](porter.png)
 
 ## Keybindings
 
