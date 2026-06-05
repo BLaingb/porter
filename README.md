@@ -51,4 +51,4 @@ go run .
 ## Requirements
 
 - macOS (uses `lsof` and `ps`)
-- Go 1.21+
+- Go 1.21+ — install with `brew install go`
